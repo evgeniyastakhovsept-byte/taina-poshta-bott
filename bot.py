@@ -61,6 +61,8 @@ class TainaPoshtaBot:
         self.application.add_handler(CommandHandler('help', self.help_command))
         self.application.add_handler(CommandHandler('send', self.send_command))
         self.application.add_handler(CommandHandler('admin', self.admin_command))
+        self.application.add_handler(CommandHandler('users', self.admin_users_command))
+        self.application.add_handler(CommandHandler('deleteuser', self.admin_delete_user_command))
         self.application.add_handler(CommandHandler('myinfo', self.myinfo_command))
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
@@ -129,7 +131,7 @@ class TainaPoshtaBot:
         )
         
         # Notify admin
-        await self.notify_admin_new_user(user_id, name, surname, username)
+        await self.notify_admin_new_user(user_id, name, surname, username, update.effective_user)
         
         return ConversationHandler.END
 
@@ -212,7 +214,7 @@ class TainaPoshtaBot:
             f"💡 Щоб змінити ім'я, використовуй /editname"
         )
 
-    async def notify_admin_new_user(self, user_id: int, name: str, surname: str, username: str):
+    async def notify_admin_new_user(self, user_id: int, name: str, surname: str, username: str, user_obj):
         """Notify admin about new registration"""
         keyboard = [
             [
@@ -224,12 +226,23 @@ class TainaPoshtaBot:
         
         username_text = f"@{username}" if username else "немає username"
         
+        # Get additional user info from Telegram profile
+        first_name_tg = user_obj.first_name if user_obj.first_name else "не вказано"
+        last_name_tg = user_obj.last_name if user_obj.last_name else ""
+        full_name_tg = f"{first_name_tg} {last_name_tg}".strip()
+        
+        # Language code
+        lang = user_obj.language_code if user_obj.language_code else "не вказано"
+        
         await self.application.bot.send_message(
             chat_id=ADMIN_ID,
             text=f"🔔 Нова реєстрація!\n\n"
-                 f"Ім'я: {name} {surname}\n"
-                 f"Username: {username_text}\n"
-                 f"ID: {user_id}",
+                 f"📝 Вказане ім'я: {name} {surname}\n"
+                 f"👤 Ім'я в Telegram: {full_name_tg}\n"
+                 f"🆔 Username: {username_text}\n"
+                 f"🔢 ID: {user_id}\n"
+                 f"🌐 Мова: {lang}\n\n"
+                 f"⚠️ Перевір, чи збігається вказане ім'я з реальним!",
             reply_markup=reply_markup
         )
 
@@ -312,11 +325,50 @@ class TainaPoshtaBot:
             )
             
             # Notify user
-            await self.application.bot.send_message(
-                chat_id=user_id,
-                text="😔 На жаль, твою реєстрацію не підтверджено.\n"
-                     "Якщо є питання, зв'яжись з адміністратором групи."
+            try:
+                await self.application.bot.send_message(
+                    chat_id=user_id,
+                    text="😔 На жаль, твою реєстрацію не підтверджено.\n"
+                         "Якщо є питання, зв'яжись з адміністратором групи."
+                )
+            except Exception as e:
+                logger.error(f"Could not notify rejected user: {e}")
+        
+        # Admin delete user from list
+        elif data.startswith('delete_'):
+            if query.from_user.id != ADMIN_ID:
+                await query.edit_message_text("❌ Тільки адміністратор може це зробити.")
+                return
+            
+            user_id_to_delete = int(data.split('_')[1])
+            
+            # Don't allow admin to delete themselves
+            if user_id_to_delete == ADMIN_ID:
+                await query.answer("❌ Ти не можеш видалити себе!", show_alert=True)
+                return
+            
+            user = self.db.get_user(user_id_to_delete)
+            
+            if not user:
+                await query.edit_message_text("❌ Користувача не знайдено.")
+                return
+            
+            # Delete user
+            self.db.delete_user(user_id_to_delete)
+            
+            await query.edit_message_text(
+                f"✅ Користувача {user['first_name']} {user['last_name']} (ID: {user_id_to_delete}) видалено!"
             )
+            
+            # Notify deleted user
+            try:
+                await self.application.bot.send_message(
+                    chat_id=user_id_to_delete,
+                    text="❌ Твій доступ до бота було скасовано адміністратором.\n"
+                         "Якщо є питання, зв'яжись з лідером молодіжної групи."
+                )
+            except Exception as e:
+                logger.error(f"Could not notify deleted user: {e}")
         
         # User selection for sending message
         elif data.startswith('select_'):
@@ -329,7 +381,7 @@ class TainaPoshtaBot:
             await query.edit_message_text(
                 f"💌 Ти обрав: {recipient['first_name']} {recipient['last_name']}\n\n"
                 "Тепер напиши своє повідомлення. Воно буде надіслане анонімно.\n\n"
-                "❗️ Пам'ятай: повідомлення повинно несті користь!"
+                "❗️ Пам'ятай: повідомлення повинно бути добрим і підтримуючим!"
             )
         
         # Reply to anonymous message
@@ -431,21 +483,41 @@ class TainaPoshtaBot:
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
-        await update.message.reply_text(
-            "📖 Довідка по боту Таємна Пошта\n\n"
-            "🔹 /start - Реєстрація в боті\n"
-            "🔹 /send - Надіслати анонімне повідомлення\n"
-            "🔹 /editname - Змінити своє ім'я\n"
-            "🔹 /myinfo - Подивитись свою інформацію\n"
-            "🔹 /help - Показати цю довідку\n\n"
-            "❓ Як це працює:\n"
-            "1. Зареєструйся і дочекайся підтвердження\n"
-            "2. Використовуй /send щоб вибрати отримувача\n"
-            "3. Напиши своє повідомлення\n"
-            "4. Воно буде надіслано анонімно!\n"
-            "5. Якщо хтось надішле тобі повідомлення - ти можеш відповісти анонімно\n\n"
-            "💡 Використовуй бот для підтримки та добрих слів! 🕊️"
-        )
+        user_id = update.effective_user.id
+        
+        if user_id == ADMIN_ID:
+            # Admin help
+            await update.message.reply_text(
+                "📖 Довідка для адміністратора\n\n"
+                "👤 Команди для користувачів:\n"
+                "🔹 /start - Реєстрація в боті\n"
+                "🔹 /send - Надіслати анонімне повідомлення\n"
+                "🔹 /editname - Змінити своє ім'я\n"
+                "🔹 /myinfo - Подивитись свою інформацію\n"
+                "🔹 /help - Показати цю довідку\n\n"
+                "👨‍💼 Команди адміністратора:\n"
+                "🔹 /admin - Статистика боту\n"
+                "🔹 /users - Список всіх користувачів (з можливістю видалення)\n"
+                "🔹 /deleteuser [ID] - Видалити користувача за ID\n\n"
+                "💡 Використовуй бот для підтримки молоді! 🕊️"
+            )
+        else:
+            # Regular user help
+            await update.message.reply_text(
+                "📖 Довідка по боту Таємна Пошта\n\n"
+                "🔹 /start - Реєстрація в боті\n"
+                "🔹 /send - Надіслати анонімне повідомлення\n"
+                "🔹 /editname - Змінити своє ім'я\n"
+                "🔹 /myinfo - Подивитись свою інформацію\n"
+                "🔹 /help - Показати цю довідку\n\n"
+                "❓ Як це працює:\n"
+                "1. Зареєструйся і дочекайся підтвердження\n"
+                "2. Використовуй /send щоб вибрати отримувача\n"
+                "3. Напиши своє повідомлення\n"
+                "4. Воно буде надіслано анонімно!\n"
+                "5. Якщо хтось надішле тобі повідомлення - ти можеш відповісти анонімно\n\n"
+                "💡 Використовуй бот для підтримки та добрих слів! 🕊️"
+            )
 
     async def cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Cancel current operation"""
@@ -466,8 +538,89 @@ class TainaPoshtaBot:
             f"📊 Статистика боту:\n\n"
             f"👥 Всього користувачів: {total_users}\n"
             f"✅ Підтверджених: {approved_users}\n"
-            f"⏳ Очікують підтвердження: {pending_users}"
+            f"⏳ Очікують підтвердження: {pending_users}\n\n"
+            f"💡 Використовуй /users щоб побачити список користувачів"
         )
+
+    async def admin_users_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Admin command to see all users with delete buttons"""
+        if update.effective_user.id != ADMIN_ID:
+            await update.message.reply_text("❌ Ця команда доступна тільки адміністратору.")
+            return
+        
+        all_users = self.db.get_all_users()
+        
+        if not all_users:
+            await update.message.reply_text("📋 Користувачів ще немає.")
+            return
+        
+        # Create list with buttons to delete users
+        keyboard = []
+        message_text = "👥 Список всіх користувачів:\n\n"
+        
+        for user in all_users:
+            status = "✅" if user['approved'] else "⏳"
+            username_text = f"@{user['username']}" if user['username'] else "немає"
+            message_text += f"{status} {user['first_name']} {user['last_name']}\n   ID: {user['user_id']} | {username_text}\n\n"
+            
+            button_text = f"🗑 {user['first_name']} {user['last_name']}"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"delete_{user['user_id']}")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            message_text + "💡 Натисни на користувача щоб видалити:",
+            reply_markup=reply_markup
+        )
+
+    async def admin_delete_user_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Admin command to delete user by ID"""
+        if update.effective_user.id != ADMIN_ID:
+            await update.message.reply_text("❌ Ця команда доступна тільки адміністратору.")
+            return
+        
+        # Check if user provided ID
+        if not context.args or len(context.args) == 0:
+            await update.message.reply_text(
+                "❌ Використання: /deleteuser [ID користувача]\n\n"
+                "Приклад: /deleteuser 123456789\n\n"
+                "Або використовуй /users щоб побачити список з кнопками."
+            )
+            return
+        
+        try:
+            user_id_to_delete = int(context.args[0])
+            
+            # Don't allow admin to delete themselves
+            if user_id_to_delete == ADMIN_ID:
+                await update.message.reply_text("❌ Ти не можеш видалити себе!")
+                return
+            
+            user = self.db.get_user(user_id_to_delete)
+            
+            if not user:
+                await update.message.reply_text("❌ Користувача з таким ID не знайдено.")
+                return
+            
+            # Delete user
+            self.db.delete_user(user_id_to_delete)
+            
+            await update.message.reply_text(
+                f"✅ Користувача {user['first_name']} {user['last_name']} (ID: {user_id_to_delete}) видалено!"
+            )
+            
+            # Notify deleted user
+            try:
+                await self.application.bot.send_message(
+                    chat_id=user_id_to_delete,
+                    text="❌ Твій доступ до бота було скасовано адміністратором.\n"
+                         "Якщо є питання, зв'яжись з лідером молодіжної групи."
+                )
+            except Exception as e:
+                logger.error(f"Could not notify deleted user: {e}")
+            
+        except ValueError:
+            await update.message.reply_text("❌ ID повинен бути числом.")
 
     def run(self):
         """Run the bot"""
