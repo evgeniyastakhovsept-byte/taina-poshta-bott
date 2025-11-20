@@ -236,3 +236,17 @@ class Database:
         except Exception as e:
             logger.error(f"Error getting thread starter: {e}")
             return message_id
+def update_user_name(self, user_id: int, first_name: str, last_name: str):
+    """Update user's name"""
+    try:
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE users SET first_name = %s, last_name = %s WHERE user_id = %s",
+                    (first_name, last_name, user_id)
+                )
+                conn.commit()
+        logger.info(f"User {user_id} name updated to {first_name} {last_name}")
+    except Exception as e:
+        logger.error(f"Error updating user name: {e}")
+        raise
