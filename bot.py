@@ -1,0 +1,338 @@
+import os
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ConversationHandler,
+    ContextTypes,
+    filters,
+)
+import asyncio
+from database import Database
+
+# Logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# States for conversation
+WAITING_NAME, WAITING_SURNAME, WAITING_MESSAGE = range(3)
+
+# Admin ID
+ADMIN_ID = 1125355606
+
+class TainaPoshtaBot:
+    def __init__(self, token: str):
+        self.token = token
+        self.db = Database()
+        self.application = Application.builder().token(token).build()
+        self._setup_handlers()
+
+    def _setup_handlers(self):
+        """Setup all command and message handlers"""
+        
+        # Registration conversation
+        conv_handler = ConversationHandler(
+            entry_points=[CommandHandler('start', self.start_command)],
+            states={
+                WAITING_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_name)],
+                WAITING_SURNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_surname)],
+            },
+            fallbacks=[CommandHandler('cancel', self.cancel_command)],
+        )
+        
+        self.application.add_handler(conv_handler)
+        self.application.add_handler(CommandHandler('help', self.help_command))
+        self.application.add_handler(CommandHandler('send', self.send_command))
+        self.application.add_handler(CommandHandler('admin', self.admin_command))
+        self.application.add_handler(CallbackQueryHandler(self.button_callback))
+        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+
+    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /start command"""
+        user_id = update.effective_user.id
+        
+        # Check if user already exists
+        user = self.db.get_user(user_id)
+        
+        if user:
+            if user['approved']:
+                await update.message.reply_text(
+                    "🕊️ Вітаю в Таємній Пошті!\n\n"
+                    "Використовуй /send щоб надіслати анонімне послання.\n"
+                    "Використовуй /help для допомоги."
+                )
+            else:
+                await update.message.reply_text(
+                    "⏳ Твоя реєстрація очікує підтвердження адміністратора.\n"
+                    "Будь ласка, почекай трохи."
+                )
+            return ConversationHandler.END
+        
+        # New user - start registration
+        await update.message.reply_text(
+            "🕊️ Вітаю в Таємній Пошті!\n\n"
+            "Це бот для анонімних повідомлень у нашій молодіжній спільноті.\n\n"
+            "Щоб почати, потрібно зареєструватися.\n"
+            "Введи своє ім'я:"
+        )
+        return WAITING_NAME
+
+    async def process_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Process user's first name"""
+        name = update.message.text.strip()
+        
+        if len(name) < 2:
+            await update.message.reply_text("❌ Ім'я занадто коротке. Спробуй ще раз:")
+            return WAITING_NAME
+        
+        context.user_data['name'] = name
+        await update.message.reply_text(f"Добре, {name}! Тепер введи своє прізвище:")
+        return WAITING_SURNAME
+
+    async def process_surname(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Process user's surname and complete registration"""
+        surname = update.message.text.strip()
+        
+        if len(surname) < 2:
+            await update.message.reply_text("❌ Прізвище занадто коротке. Спробуй ще раз:")
+            return WAITING_SURNAME
+        
+        user_id = update.effective_user.id
+        username = update.effective_user.username
+        name = context.user_data['name']
+        
+        # Save to database
+        self.db.add_user(user_id, name, surname, username)
+        
+        await update.message.reply_text(
+            f"✅ Дякую, {name} {surname}!\n\n"
+            "Твоя реєстрація відправлена адміністратору на розгляд.\n"
+            "Очікуй підтвердження. Ми повідомимо тебе, коли зможеш користуватися ботом! 🕊️"
+        )
+        
+        # Notify admin
+        await self.notify_admin_new_user(user_id, name, surname, username)
+        
+        return ConversationHandler.END
+
+    async def notify_admin_new_user(self, user_id: int, name: str, surname: str, username: str):
+        """Notify admin about new registration"""
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Підтвердити", callback_data=f"approve_{user_id}"),
+                InlineKeyboardButton("❌ Відхилити", callback_data=f"reject_{user_id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        username_text = f"@{username}" if username else "немає username"
+        
+        await self.application.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"🔔 Нова реєстрація!\n\n"
+                 f"Ім'я: {name} {surname}\n"
+                 f"Username: {username_text}\n"
+                 f"ID: {user_id}",
+            reply_markup=reply_markup
+        )
+
+    async def send_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /send command - show list of users"""
+        user_id = update.effective_user.id
+        user = self.db.get_user(user_id)
+        
+        if not user or not user['approved']:
+            await update.message.reply_text(
+                "❌ Ти ще не підтверджений адміністратором.\n"
+                "Зачекай на підтвердження або напиши /start для реєстрації."
+            )
+            return
+        
+        # Get all approved users except sender
+        users = self.db.get_approved_users(exclude_user_id=user_id)
+        
+        if not users:
+            await update.message.reply_text(
+                "😔 Поки що немає інших підтверджених користувачів.\n"
+                "Зачекай, поки хтось ще приєднається!"
+            )
+            return
+        
+        # Create inline keyboard with users
+        keyboard = []
+        for user in users:
+            button_text = f"{user['first_name']} {user['last_name']}"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"select_{user['user_id']}")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "💌 Кому хочеш надіслати анонімне повідомлення?\n"
+            "Вибери отримувача зі списку:",
+            reply_markup=reply_markup
+        )
+
+    async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle button clicks"""
+        query = update.callback_query
+        await query.answer()
+        
+        data = query.data
+        
+        # Admin approval/rejection
+        if data.startswith('approve_'):
+            if query.from_user.id != ADMIN_ID:
+                await query.edit_message_text("❌ Тільки адміністратор може це зробити.")
+                return
+            
+            user_id = int(data.split('_')[1])
+            self.db.approve_user(user_id)
+            user = self.db.get_user(user_id)
+            
+            await query.edit_message_text(
+                f"✅ Користувач {user['first_name']} {user['last_name']} підтверджений!"
+            )
+            
+            # Notify user
+            await self.application.bot.send_message(
+                chat_id=user_id,
+                text="🎉 Твою реєстрацію підтверджено!\n\n"
+                     "Тепер ти можеш користуватися ботом.\n"
+                     "Використовуй /send щоб надіслати анонімне повідомлення."
+            )
+        
+        elif data.startswith('reject_'):
+            if query.from_user.id != ADMIN_ID:
+                await query.edit_message_text("❌ Тільки адміністратор може це зробити.")
+                return
+            
+            user_id = int(data.split('_')[1])
+            user = self.db.get_user(user_id)
+            self.db.delete_user(user_id)
+            
+            await query.edit_message_text(
+                f"❌ Користувач {user['first_name']} {user['last_name']} відхилений."
+            )
+            
+            # Notify user
+            await self.application.bot.send_message(
+                chat_id=user_id,
+                text="😔 На жаль, твою реєстрацію не підтверджено.\n"
+                     "Якщо є питання, зв'яжись з адміністратором групи."
+            )
+        
+        # User selection for sending message
+        elif data.startswith('select_'):
+            recipient_id = int(data.split('_')[1])
+            recipient = self.db.get_user(recipient_id)
+            
+            context.user_data['recipient_id'] = recipient_id
+            
+            await query.edit_message_text(
+                f"💌 Ти обрав: {recipient['first_name']} {recipient['last_name']}\n\n"
+                "Тепер напиши своє повідомлення. Воно буде надіслане анонімно.\n\n"
+                "❗️ Пам'ятай: повідомлення повинно бути добрим і підтримуючим!"
+            )
+
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle regular text messages (for sending anonymous messages)"""
+        user_id = update.effective_user.id
+        user = self.db.get_user(user_id)
+        
+        if not user or not user['approved']:
+            await update.message.reply_text(
+                "❌ Спочатку потрібно зареєструватися та отримати підтвердження.\n"
+                "Використовуй /start"
+            )
+            return
+        
+        # Check if user has selected a recipient
+        if 'recipient_id' not in context.user_data:
+            await update.message.reply_text(
+                "Використовуй /send щоб вибрати, кому надіслати повідомлення."
+            )
+            return
+        
+        recipient_id = context.user_data['recipient_id']
+        message_text = update.message.text
+        
+        # Send anonymous message
+        try:
+            await self.application.bot.send_message(
+                chat_id=recipient_id,
+                text=f"💌 Тобі надійшло анонімне повідомлення:\n\n"
+                     f"{message_text}\n\n"
+                     f"───────────────\n"
+                     f"Хтось із нашої спільноти думає про тебе! 🕊️"
+            )
+            
+            await update.message.reply_text(
+                "✅ Твоє повідомлення надіслано!\n\n"
+                "Хочеш надіслати ще одне? Використовуй /send"
+            )
+            
+            # Clear recipient from context
+            del context.user_data['recipient_id']
+            
+        except Exception as e:
+            logger.error(f"Error sending message: {e}")
+            await update.message.reply_text(
+                "❌ Не вдалося надіслати повідомлення. Спробуй пізніше."
+            )
+
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /help command"""
+        await update.message.reply_text(
+            "📖 Довідка по боту Таємна Пошта\n\n"
+            "🔹 /start - Реєстрація в боті\n"
+            "🔹 /send - Надіслати анонімне повідомлення\n"
+            "🔹 /help - Показати цю довідку\n\n"
+            "❓ Як це працює:\n"
+            "1. Зареєструйся і дочекайся підтвердження\n"
+            "2. Використовуй /send щоб вибрати отримувача\n"
+            "3. Напиши своє повідомлення\n"
+            "4. Воно буде надіслано анонімно!\n\n"
+            "💡 Використовуй бот для підтримки та добрих слів! 🕊️"
+        )
+
+    async def cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Cancel current operation"""
+        await update.message.reply_text("❌ Операцію скасовано.")
+        return ConversationHandler.END
+
+    async def admin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Admin command to see statistics"""
+        if update.effective_user.id != ADMIN_ID:
+            await update.message.reply_text("❌ Ця команда доступна тільки адміністратору.")
+            return
+        
+        total_users = self.db.get_total_users()
+        approved_users = self.db.get_approved_count()
+        pending_users = total_users - approved_users
+        
+        await update.message.reply_text(
+            f"📊 Статистика боту:\n\n"
+            f"👥 Всього користувачів: {total_users}\n"
+            f"✅ Підтверджених: {approved_users}\n"
+            f"⏳ Очікують підтвердження: {pending_users}"
+        )
+
+    def run(self):
+        """Run the bot"""
+        logger.info("Starting Taina Poshta Bot...")
+        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == '__main__':
+    TOKEN = os.getenv('BOT_TOKEN')
+    if not TOKEN:
+        raise ValueError("BOT_TOKEN environment variable is not set!")
+    
+    bot = TainaPoshtaBot(TOKEN)
+    bot.run()
