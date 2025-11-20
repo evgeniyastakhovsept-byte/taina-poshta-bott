@@ -574,53 +574,35 @@ class TainaPoshtaBot:
         )
 
     async def admin_delete_user_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Admin command to delete user by ID"""
+        """Admin command to delete user - shows list with buttons"""
         if update.effective_user.id != ADMIN_ID:
             await update.message.reply_text("❌ Ця команда доступна тільки адміністратору.")
             return
         
-        # Check if user provided ID
-        if not context.args or len(context.args) == 0:
-            await update.message.reply_text(
-                "❌ Використання: /deleteuser [ID користувача]\n\n"
-                "Приклад: /deleteuser 123456789\n\n"
-                "Або використовуй /users щоб побачити список з кнопками."
-            )
+        all_users = self.db.get_all_users()
+        
+        if not all_users:
+            await update.message.reply_text("📋 Користувачів ще немає.")
             return
         
-        try:
-            user_id_to_delete = int(context.args[0])
+        # Create list with buttons to delete users
+        keyboard = []
+        message_text = "🗑 Видалення користувачів\n\n"
+        message_text += "Натисни на користувача щоб видалити:\n\n"
+        
+        for user in all_users:
+            status = "✅" if user['approved'] else "⏳"
+            username_text = f"@{user['username']}" if user['username'] else "немає"
             
-            # Don't allow admin to delete themselves
-            if user_id_to_delete == ADMIN_ID:
-                await update.message.reply_text("❌ Ти не можеш видалити себе!")
-                return
-            
-            user = self.db.get_user(user_id_to_delete)
-            
-            if not user:
-                await update.message.reply_text("❌ Користувача з таким ID не знайдено.")
-                return
-            
-            # Delete user
-            self.db.delete_user(user_id_to_delete)
-            
-            await update.message.reply_text(
-                f"✅ Користувача {user['first_name']} {user['last_name']} (ID: {user_id_to_delete}) видалено!"
-            )
-            
-            # Notify deleted user
-            try:
-                await self.application.bot.send_message(
-                    chat_id=user_id_to_delete,
-                    text="❌ Твій доступ до бота було скасовано адміністратором.\n"
-                         "Якщо є питання, зв'яжись з лідером молодіжної групи."
-                )
-            except Exception as e:
-                logger.error(f"Could not notify deleted user: {e}")
-            
-        except ValueError:
-            await update.message.reply_text("❌ ID повинен бути числом.")
+            button_text = f"🗑 {user['first_name']} {user['last_name']} ({status})"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"delete_{user['user_id']}")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            message_text,
+            reply_markup=reply_markup
+        )
 
     def run(self):
         """Run the bot"""
