@@ -171,7 +171,7 @@ class TainaPoshtaBot:
         return EDIT_SURNAME
 
     async def process_edit_surname(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Process edited surname and update database"""
+        """Process edited surname and send to admin for approval"""
         surname = update.message.text.strip()
         
         if len(surname) < 2:
@@ -181,13 +181,19 @@ class TainaPoshtaBot:
         user_id = update.effective_user.id
         name = context.user_data['edit_name']
         
-        # Update in database
-        self.db.update_user_name(user_id, name, surname)
+        # Get current user info
+        user = self.db.get_user(user_id)
+        old_name = f"{user['first_name']} {user['last_name']}"
+        new_name = f"{name} {surname}"
+        
+        # Send to admin for approval
+        await self.notify_admin_name_change(user_id, old_name, new_name, name, surname, user['username'])
         
         await update.message.reply_text(
-            f"✅ Профіль оновлено!\n\n"
-            f"Твоє нове ім'я: {name} {surname}\n\n"
-            f"Тепер інші користувачі бачитимуть тебе під цим ім'ям."
+            f"✅ Запит на зміну імені надіслано!\n\n"
+            f"Старе ім'я: {old_name}\n"
+            f"Нове ім'я: {new_name}\n\n"
+            f"Очікуй підтвердження адміністратора."
         )
         
         # Clear context
@@ -250,6 +256,29 @@ class TainaPoshtaBot:
             reply_markup=reply_markup
         )
 
+    async def notify_admin_name_change(self, user_id: int, old_name: str, new_name: str, new_first: str, new_last: str, username: str):
+        """Notify admin about name change request"""
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Підтвердити", callback_data=f"approve_name_{user_id}_{new_first}_{new_last}"),
+                InlineKeyboardButton("❌ Відхилити", callback_data=f"reject_name_{user_id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        username_text = f"@{username}" if username else "немає username"
+        
+        await self.application.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"🔄 Запит на зміну імені!\n\n"
+                 f"👤 Користувач: {old_name}\n"
+                 f"🆔 Username: {username_text}\n"
+                 f"🔢 ID: {user_id}\n\n"
+                 f"📝 Хоче змінити на: {new_name}\n\n"
+                 f"⚠️ Перевір, чи це не спроба підробити чуже ім'я!",
+            reply_markup=reply_markup
+        )
+
     async def send_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /send command - show list of users"""
         user_id = update.effective_user.id
@@ -293,8 +322,60 @@ class TainaPoshtaBot:
         
         data = query.data
         
+        # Name change approval
+        if data.startswith('approve_name_'):
+            if query.from_user.id != ADMIN_ID:
+                await query.edit_message_text("❌ Тільки адміністратор може це зробити.")
+                return
+            
+            parts = data.split('_')
+            user_id = int(parts[2])
+            new_first = parts[3]
+            new_last = parts[4]
+            
+            # Update name in database
+            self.db.update_user_name(user_id, new_first, new_last)
+            
+            await query.edit_message_text(
+                f"✅ Зміну імені підтверджено!\n\n"
+                f"Нове ім'я: {new_first} {new_last}"
+            )
+            
+            # Notify user
+            try:
+                await self.application.bot.send_message(
+                    chat_id=user_id,
+                    text=f"✅ Твій запит на зміну імені підтверджено!\n\n"
+                         f"Твоє нове ім'я: {new_first} {new_last}\n\n"
+                         f"Тепер інші користувачі бачитимуть тебе під цим ім'ям."
+                )
+            except Exception as e:
+                logger.error(f"Could not notify user about name change: {e}")
+        
+        elif data.startswith('reject_name_'):
+            if query.from_user.id != ADMIN_ID:
+                await query.edit_message_text("❌ Тільки адміністратор може це зробити.")
+                return
+            
+            user_id = int(data.split('_')[2])
+            user = self.db.get_user(user_id)
+            
+            await query.edit_message_text(
+                f"❌ Зміну імені відхилено для користувача {user['first_name']} {user['last_name']}"
+            )
+            
+            # Notify user
+            try:
+                await self.application.bot.send_message(
+                    chat_id=user_id,
+                    text="❌ На жаль, твій запит на зміну імені відхилено.\n"
+                         "Якщо є питання, зв'яжись з адміністратором."
+                )
+            except Exception as e:
+                logger.error(f"Could not notify user about name change rejection: {e}")
+        
         # Admin approval/rejection
-        if data.startswith('approve_'):
+        elif data.startswith('approve_'):
             if query.from_user.id != ADMIN_ID:
                 await query.edit_message_text("❌ Тільки адміністратор може це зробити.")
                 return
@@ -385,7 +466,7 @@ class TainaPoshtaBot:
             await query.edit_message_text(
                 f"💌 Ти обрав: {recipient['first_name']} {recipient['last_name']}\n\n"
                 "Тепер напиши своє повідомлення. Воно буде надіслане анонімно.\n\n"
-                "❗️ Пам'ятай: повідомлення повинно бути добрим і підтримуючим!"
+                "❗️ Пам'ятай: повідомлення повинно бути корисним!"
             )
         
         # Reply to anonymous message
