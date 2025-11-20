@@ -21,7 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # States for conversation
-WAITING_NAME, WAITING_SURNAME, WAITING_MESSAGE, WAITING_REPLY = range(4)
+WAITING_NAME, WAITING_SURNAME, WAITING_MESSAGE, WAITING_REPLY, EDIT_NAME, EDIT_SURNAME = range(6)
 
 # Admin ID
 ADMIN_ID = 1125355606
@@ -37,7 +37,7 @@ class TainaPoshtaBot:
         """Setup all command and message handlers"""
         
         # Registration conversation
-        conv_handler = ConversationHandler(
+        registration_handler = ConversationHandler(
             entry_points=[CommandHandler('start', self.start_command)],
             states={
                 WAITING_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_name)],
@@ -46,10 +46,22 @@ class TainaPoshtaBot:
             fallbacks=[CommandHandler('cancel', self.cancel_command)],
         )
         
-        self.application.add_handler(conv_handler)
+        # Edit name conversation
+        edit_name_handler = ConversationHandler(
+            entry_points=[CommandHandler('editname', self.edit_name_command)],
+            states={
+                EDIT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_edit_name)],
+                EDIT_SURNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_edit_surname)],
+            },
+            fallbacks=[CommandHandler('cancel', self.cancel_command)],
+        )
+        
+        self.application.add_handler(registration_handler)
+        self.application.add_handler(edit_name_handler)
         self.application.add_handler(CommandHandler('help', self.help_command))
         self.application.add_handler(CommandHandler('send', self.send_command))
         self.application.add_handler(CommandHandler('admin', self.admin_command))
+        self.application.add_handler(CommandHandler('myinfo', self.myinfo_command))
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
 
@@ -120,6 +132,85 @@ class TainaPoshtaBot:
         await self.notify_admin_new_user(user_id, name, surname, username)
         
         return ConversationHandler.END
+
+    async def edit_name_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /editname command"""
+        user_id = update.effective_user.id
+        user = self.db.get_user(user_id)
+        
+        if not user:
+            await update.message.reply_text(
+                "❌ Ти ще не зареєстрований.\n"
+                "Використовуй /start для реєстрації."
+            )
+            return ConversationHandler.END
+        
+        await update.message.reply_text(
+            f"📝 Редагування профілю\n\n"
+            f"Зараз твоє ім'я: {user['first_name']} {user['last_name']}\n\n"
+            f"Введи нове ім'я або /cancel щоб скасувати:"
+        )
+        return EDIT_NAME
+
+    async def process_edit_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Process edited first name"""
+        name = update.message.text.strip()
+        
+        if len(name) < 2:
+            await update.message.reply_text("❌ Ім'я занадто коротке. Спробуй ще раз:")
+            return EDIT_NAME
+        
+        context.user_data['edit_name'] = name
+        await update.message.reply_text(f"Добре! Тепер введи нове прізвище:")
+        return EDIT_SURNAME
+
+    async def process_edit_surname(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Process edited surname and update database"""
+        surname = update.message.text.strip()
+        
+        if len(surname) < 2:
+            await update.message.reply_text("❌ Прізвище занадто коротке. Спробуй ще раз:")
+            return EDIT_SURNAME
+        
+        user_id = update.effective_user.id
+        name = context.user_data['edit_name']
+        
+        # Update in database
+        self.db.update_user_name(user_id, name, surname)
+        
+        await update.message.reply_text(
+            f"✅ Профіль оновлено!\n\n"
+            f"Твоє нове ім'я: {name} {surname}\n\n"
+            f"Тепер інші користувачі бачитимуть тебе під цим ім'ям."
+        )
+        
+        # Clear context
+        context.user_data.pop('edit_name', None)
+        
+        return ConversationHandler.END
+
+    async def myinfo_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show user their current information"""
+        user_id = update.effective_user.id
+        user = self.db.get_user(user_id)
+        
+        if not user:
+            await update.message.reply_text(
+                "❌ Ти ще не зареєстрований.\n"
+                "Використовуй /start для реєстрації."
+            )
+            return
+        
+        status = "✅ Підтверджений" if user['approved'] else "⏳ Очікує підтвердження"
+        username_text = f"@{user['username']}" if user['username'] else "немає"
+        
+        await update.message.reply_text(
+            f"👤 Твоя інформація:\n\n"
+            f"Ім'я: {user['first_name']} {user['last_name']}\n"
+            f"Username: {username_text}\n"
+            f"Статус: {status}\n\n"
+            f"💡 Щоб змінити ім'я, використовуй /editname"
+        )
 
     async def notify_admin_new_user(self, user_id: int, name: str, surname: str, username: str):
         """Notify admin about new registration"""
@@ -238,7 +329,7 @@ class TainaPoshtaBot:
             await query.edit_message_text(
                 f"💌 Ти обрав: {recipient['first_name']} {recipient['last_name']}\n\n"
                 "Тепер напиши своє повідомлення. Воно буде надіслане анонімно.\n\n"
-                "❗️ Пам'ятай: повідомлення повинно бути добрим і підтримуючим!"
+                "❗️ Пам'ятай: повідомлення повинно несті користь!"
             )
         
         # Reply to anonymous message
@@ -344,6 +435,8 @@ class TainaPoshtaBot:
             "📖 Довідка по боту Таємна Пошта\n\n"
             "🔹 /start - Реєстрація в боті\n"
             "🔹 /send - Надіслати анонімне повідомлення\n"
+            "🔹 /editname - Змінити своє ім'я\n"
+            "🔹 /myinfo - Подивитись свою інформацію\n"
             "🔹 /help - Показати цю довідку\n\n"
             "❓ Як це працює:\n"
             "1. Зареєструйся і дочекайся підтвердження\n"
