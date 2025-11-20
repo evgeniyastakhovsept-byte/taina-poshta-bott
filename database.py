@@ -104,6 +104,21 @@ class Database:
             logger.error(f"Error approving user: {e}")
             raise
     
+    def update_user_name(self, user_id: int, first_name: str, last_name: str):
+        """Update user's name"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE users SET first_name = %s, last_name = %s WHERE user_id = %s",
+                        (first_name, last_name, user_id)
+                    )
+                    conn.commit()
+            logger.info(f"User {user_id} name updated to {first_name} {last_name}")
+        except Exception as e:
+            logger.error(f"Error updating user name: {e}")
+            raise
+    
     def delete_user(self, user_id: int):
         """Delete a user"""
         try:
@@ -144,6 +159,22 @@ class Database:
                     return cur.fetchall()
         except Exception as e:
             logger.error(f"Error getting approved users: {e}")
+            return []
+    
+    def get_all_users(self) -> List[Dict]:
+        """Get all users (for admin)"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT * FROM users 
+                        ORDER BY approved DESC, first_name, last_name
+                        """
+                    )
+                    return cur.fetchall()
+        except Exception as e:
+            logger.error(f"Error getting all users: {e}")
             return []
     
     def get_total_users(self) -> int:
@@ -236,17 +267,3 @@ class Database:
         except Exception as e:
             logger.error(f"Error getting thread starter: {e}")
             return message_id
-def update_user_name(self, user_id: int, first_name: str, last_name: str):
-    """Update user's name"""
-    try:
-        with self.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE users SET first_name = %s, last_name = %s WHERE user_id = %s",
-                    (first_name, last_name, user_id)
-                )
-                conn.commit()
-        logger.info(f"User {user_id} name updated to {first_name} {last_name}")
-    except Exception as e:
-        logger.error(f"Error updating user name: {e}")
-        raise
