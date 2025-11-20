@@ -21,7 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # States for conversation
-WAITING_NAME, WAITING_SURNAME, WAITING_MESSAGE = range(3)
+WAITING_NAME, WAITING_SURNAME, WAITING_MESSAGE, WAITING_REPLY = range(4)
 
 # Admin ID
 ADMIN_ID = 1125355606
@@ -233,11 +233,34 @@ class TainaPoshtaBot:
             recipient = self.db.get_user(recipient_id)
             
             context.user_data['recipient_id'] = recipient_id
+            context.user_data['reply_to_message'] = None  # This is a new message, not a reply
             
             await query.edit_message_text(
                 f"💌 Ти обрав: {recipient['first_name']} {recipient['last_name']}\n\n"
                 "Тепер напиши своє повідомлення. Воно буде надіслане анонімно.\n\n"
                 "❗️ Пам'ятай: повідомлення повинно бути добрим і підтримуючим!"
+            )
+        
+        # Reply to anonymous message
+        elif data.startswith('reply_'):
+            message_id = int(data.split('_')[1])
+            
+            # Get the original message to find who sent it
+            message = self.db.get_message(message_id)
+            
+            if not message:
+                await query.edit_message_text("❌ Повідомлення не знайдено.")
+                return
+            
+            # Store the message_id to reply to
+            context.user_data['reply_to_message'] = message_id
+            context.user_data['recipient_id'] = message['sender_id']  # Reply goes back to sender
+            
+            await query.answer()
+            await self.application.bot.send_message(
+                chat_id=query.from_user.id,
+                text="✍️ Напиши свою відповідь. Вона буде надіслана анонімно тій людині, "
+                     "яка надіслала тобі повідомлення."
             )
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -261,15 +284,43 @@ class TainaPoshtaBot:
         
         recipient_id = context.user_data['recipient_id']
         message_text = update.message.text
+        reply_to_message = context.user_data.get('reply_to_message')
         
-        # Send anonymous message
+        # Save message to database
         try:
+            # If this is a reply, link it to the original message
+            thread_id = None
+            if reply_to_message:
+                # Get the thread starter (original message)
+                thread_id = self.db.get_thread_starter(reply_to_message)
+            
+            message_id = self.db.save_message(user_id, recipient_id, message_text, thread_id)
+            
+            # Prepare the message for recipient
+            if reply_to_message:
+                message_for_recipient = (
+                    f"💬 Відповідь на твоє анонімне повідомлення:\n\n"
+                    f"{message_text}\n\n"
+                    f"───────────────\n"
+                    f"Людина, якій ти писав(ла), відповіла! 🕊️"
+                )
+            else:
+                message_for_recipient = (
+                    f"💌 Тобі надійшло анонімне повідомлення:\n\n"
+                    f"{message_text}\n\n"
+                    f"───────────────\n"
+                    f"Хтось із нашої спільноти думає про тебе! 🕊️"
+                )
+            
+            # Add reply button
+            keyboard = [[InlineKeyboardButton("💬 Відповісти анонімно", callback_data=f"reply_{message_id}")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            # Send anonymous message to recipient
             await self.application.bot.send_message(
                 chat_id=recipient_id,
-                text=f"💌 Тобі надійшло анонімне повідомлення:\n\n"
-                     f"{message_text}\n\n"
-                     f"───────────────\n"
-                     f"Хтось із нашої спільноти думає про тебе! 🕊️"
+                text=message_for_recipient,
+                reply_markup=reply_markup
             )
             
             await update.message.reply_text(
@@ -278,7 +329,8 @@ class TainaPoshtaBot:
             )
             
             # Clear recipient from context
-            del context.user_data['recipient_id']
+            context.user_data.pop('recipient_id', None)
+            context.user_data.pop('reply_to_message', None)
             
         except Exception as e:
             logger.error(f"Error sending message: {e}")
@@ -297,7 +349,8 @@ class TainaPoshtaBot:
             "1. Зареєструйся і дочекайся підтвердження\n"
             "2. Використовуй /send щоб вибрати отримувача\n"
             "3. Напиши своє повідомлення\n"
-            "4. Воно буде надіслано анонімно!\n\n"
+            "4. Воно буде надіслано анонімно!\n"
+            "5. Якщо хтось надішле тобі повідомлення - ти можеш відповісти анонімно\n\n"
             "💡 Використовуй бот для підтримки та добрих слів! 🕊️"
         )
 
