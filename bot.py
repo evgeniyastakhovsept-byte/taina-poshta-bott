@@ -147,6 +147,10 @@ class TainaPoshtaBot:
             )
             return ConversationHandler.END
         
+        # Store current name for reference
+        context.user_data['current_first_name'] = user['first_name']
+        context.user_data['current_last_name'] = user['last_name']
+        
         await update.message.reply_text(
             f"📝 Редагування профілю\n\n"
             f"Зараз твоє ім'я: {user['first_name']} {user['last_name']}\n\n"
@@ -381,7 +385,7 @@ class TainaPoshtaBot:
             await query.edit_message_text(
                 f"💌 Ти обрав: {recipient['first_name']} {recipient['last_name']}\n\n"
                 "Тепер напиши своє повідомлення. Воно буде надіслане анонімно.\n\n"
-                "❗️ Пам'ятай: повідомлення повинно бути корисним!"
+                "❗️ Пам'ятай: повідомлення повинно бути добрим і підтримуючим!"
             )
         
         # Reply to anonymous message
@@ -530,16 +534,28 @@ class TainaPoshtaBot:
             await update.message.reply_text("❌ Ця команда доступна тільки адміністратору.")
             return
         
+        # User statistics
         total_users = self.db.get_total_users()
         approved_users = self.db.get_approved_count()
         pending_users = total_users - approved_users
         
+        # Message statistics
+        total_messages = self.db.get_total_messages()
+        messages_week = self.db.get_messages_last_week()
+        messages_today = self.db.get_messages_today()
+        
         await update.message.reply_text(
             f"📊 Статистика боту:\n\n"
-            f"👥 Всього користувачів: {total_users}\n"
-            f"✅ Підтверджених: {approved_users}\n"
-            f"⏳ Очікують підтвердження: {pending_users}\n\n"
-            f"💡 Використовуй /users щоб побачити список користувачів"
+            f"👥 Користувачі:\n"
+            f"• Всього: {total_users}\n"
+            f"• Підтверджених: {approved_users}\n"
+            f"• Очікують: {pending_users}\n\n"
+            f"💌 Повідомлення:\n"
+            f"• За сьогодні: {messages_today}\n"
+            f"• За тиждень: {messages_week}\n"
+            f"• Всього: {total_messages}\n\n"
+            f"💡 /users - список користувачів\n"
+            f"💡 /deleteuser - видалити користувача"
         )
 
     async def admin_users_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
