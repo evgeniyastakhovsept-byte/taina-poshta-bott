@@ -26,6 +26,7 @@ class Database:
         """Create necessary tables if they don't exist"""
         with self.get_connection() as conn:
             with conn.cursor() as cur:
+                # Users table
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS users (
                         user_id BIGINT PRIMARY KEY,
@@ -36,6 +37,22 @@ class Database:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
+                
+                # Messages table to track conversation threads
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS messages (
+                        message_id SERIAL PRIMARY KEY,
+                        sender_id BIGINT NOT NULL,
+                        recipient_id BIGINT NOT NULL,
+                        message_text TEXT NOT NULL,
+                        thread_id INTEGER,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (sender_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                        FOREIGN KEY (recipient_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                        FOREIGN KEY (thread_id) REFERENCES messages(message_id) ON DELETE SET NULL
+                    )
+                """)
+                
                 conn.commit()
         logger.info("Database tables created/verified")
     
@@ -152,3 +169,70 @@ class Database:
         except Exception as e:
             logger.error(f"Error getting approved count: {e}")
             return 0
+    
+    def save_message(self, sender_id: int, recipient_id: int, message_text: str, thread_id: Optional[int] = None) -> int:
+        """Save a message and return its ID"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO messages (sender_id, recipient_id, message_text, thread_id)
+                        VALUES (%s, %s, %s, %s)
+                        RETURNING message_id
+                        """,
+                        (sender_id, recipient_id, message_text, thread_id)
+                    )
+                    result = cur.fetchone()
+                    conn.commit()
+                    message_id = result['message_id']
+                    logger.info(f"Message saved: {message_id} from {sender_id} to {recipient_id}")
+                    return message_id
+        except Exception as e:
+            logger.error(f"Error saving message: {e}")
+            raise
+    
+    def get_message(self, message_id: int) -> Optional[Dict]:
+        """Get message by ID"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT * FROM messages WHERE message_id = %s",
+                        (message_id,)
+                    )
+                    return cur.fetchone()
+        except Exception as e:
+            logger.error(f"Error getting message: {e}")
+            return None
+    
+    def get_thread_starter(self, message_id: int) -> int:
+        """Get the original message ID that started the thread"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Follow thread_id back to the original message
+                    cur.execute(
+                        """
+                        WITH RECURSIVE thread_chain AS (
+                            SELECT message_id, thread_id, sender_id, recipient_id
+                            FROM messages
+                            WHERE message_id = %s
+                            
+                            UNION ALL
+                            
+                            SELECT m.message_id, m.thread_id, m.sender_id, m.recipient_id
+                            FROM messages m
+                            INNER JOIN thread_chain tc ON m.message_id = tc.thread_id
+                        )
+                        SELECT message_id FROM thread_chain
+                        WHERE thread_id IS NULL
+                        LIMIT 1
+                        """,
+                        (message_id,)
+                    )
+                    result = cur.fetchone()
+                    return result['message_id'] if result else message_id
+        except Exception as e:
+            logger.error(f"Error getting thread starter: {e}")
+            return message_id
