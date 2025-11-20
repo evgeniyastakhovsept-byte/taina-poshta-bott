@@ -267,3 +267,49 @@ class Database:
         except Exception as e:
             logger.error(f"Error getting thread starter: {e}")
             return message_id
+    
+    def get_total_messages(self) -> int:
+        """Get total number of messages sent"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT COUNT(*) as count FROM messages")
+                    result = cur.fetchone()
+                    return result['count'] if result else 0
+        except Exception as e:
+            logger.error(f"Error getting total messages: {e}")
+            return 0
+    
+    def get_messages_last_week(self) -> int:
+        """Get number of messages sent in the last 7 days"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT COUNT(*) as count FROM messages 
+                        WHERE created_at >= NOW() - INTERVAL '7 days'
+                        """
+                    )
+                    result = cur.fetchone()
+                    return result['count'] if result else 0
+        except Exception as e:
+            logger.error(f"Error getting messages from last week: {e}")
+            return 0
+    
+    def get_messages_today(self) -> int:
+        """Get number of messages sent today"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT COUNT(*) as count FROM messages 
+                        WHERE DATE(created_at) = CURRENT_DATE
+                        """
+                    )
+                    result = cur.fetchone()
+                    return result['count'] if result else 0
+        except Exception as e:
+            logger.error(f"Error getting messages from today: {e}")
+            return 0
